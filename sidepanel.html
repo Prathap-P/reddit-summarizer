@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reddit Summarizer</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="header">
+      <div class="header-title">
+        <img src="icons/icon-48.png" alt="" class="header-icon" />
+        <span>Reddit Summarizer</span>
+      </div>
+      <button id="settings-toggle" class="icon-btn" title="Settings" aria-label="Toggle settings">
+        &#9881;
+      </button>
+    </header>
+
+    <!-- Settings panel (collapsed by default) -->
+    <section id="settings-panel" class="settings-panel hidden" aria-hidden="true">
+      <label for="lm-base-url">LM Studio Base URL</label>
+      <input
+        type="text"
+        id="lm-base-url"
+        placeholder="http://localhost:1234"
+        autocomplete="off"
+        spellcheck="false"
+      />
+
+      <label for="lm-model">Model Name</label>
+      <input
+        type="text"
+        id="lm-model"
+        placeholder="e.g. llama-3.2-3b-instruct"
+        autocomplete="off"
+        spellcheck="false"
+      />
+
+      <button id="save-settings" class="btn btn-secondary">Save Settings</button>
+      <p id="settings-status" class="settings-status"></p>
+    </section>
+
+    <!-- Not-on-post notice -->
+    <div id="not-reddit-notice" class="notice hidden">
+      Open a Reddit post to use this extension.
+    </div>
+
+    <!-- Main content -->
+    <main id="main-content" class="main">
+
+      <!-- Post summarization -->
+      <section class="section">
+        <button id="btn-summarize-post" class="btn btn-primary">
+          Summarize Post
+        </button>
+        <div id="post-summary-area" class="output-area hidden">
+          <div id="post-loading" class="spinner hidden" aria-label="Loading"></div>
+          <div id="post-summary" class="summary-text"></div>
+        </div>
+      </section>
+
+      <!-- Comments summarization (Phase 2 — disabled) -->
+      <section class="section">
+        <button id="btn-summarize-comments" class="btn btn-primary" disabled>
+          Summarize Comments
+        </button>
+        <p class="coming-soon">Coming in Phase 2 — Reddit API integration</p>
+        <div id="comments-summary-area" class="output-area hidden">
+          <div id="comments-loading" class="spinner hidden" aria-label="Loading"></div>
+          <div id="comments-summary" class="summary-text"></div>
+        </div>
+      </section>
+
+    </main>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
