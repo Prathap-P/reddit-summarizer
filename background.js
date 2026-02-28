@@ -65,7 +65,7 @@ async function handleSummarize(text, tabId) {
           { role: "user", content: text },
         ],
         temperature: 0.3,
-        max_tokens: -1,
+        max_tokens: 10000,
       }),
     });
 
@@ -79,9 +79,16 @@ async function handleSummarize(text, tabId) {
 
     if (!summary) throw new Error("No summary returned from the model.");
 
+    // Find the LAST <output>...</output> block — the model may emit intermediate
+    // output tags during its thinking process; only the final one is the real answer.
+    const outputMatches = [...summary.matchAll(/<output>([\s\S]*?)<\/output>/gi)];
+    const extracted     = outputMatches.length > 0
+      ? outputMatches[outputMatches.length - 1][1].trim()
+      : summary.trim(); // fallback: no tags at all
+
     // Write success result — sidepanel reads this via storage.onChanged
     await chrome.storage.local.set({
-      [key]: { status: "done", summary: summary.trim(), savedAt: Date.now() },
+      [key]: { status: "done", summary: extracted, savedAt: Date.now() },
     });
   } catch (err) {
     // Write error result so the sidebar can display it
