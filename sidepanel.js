@@ -14,8 +14,11 @@ const postSummaryArea   = document.getElementById("post-summary-area");
 const postLoading       = document.getElementById("post-loading");
 const postSummaryEl     = document.getElementById("post-summary");
 
-// ── Regex to detect a Reddit post URL ─────────────────────────────────────
+// ── Constants & shared state ───────────────────────────────────────────────
 const REDDIT_POST_RE = /^https:\/\/www\.reddit\.com\/r\/[^/]+\/comments\//;
+const SUMMARY_TTL_MS = 10 * 60 * 1000;           // 10 minutes
+const summaryKey     = (tabId) => `summary_${tabId}`;
+let   currentTabId   = null;
 
 // ── Initialise ────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
@@ -27,6 +30,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 chrome.tabs.onActivated.addListener(() => refreshUI());
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
   if (changeInfo.status === "complete") refreshUI();
+});
+
+// ── React to storage changes (result arriving from background) ────────────
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || currentTabId === null) return;
+  const key = summaryKey(currentTabId);
+  if (!changes[key]) return;
+  applyStoredState(changes[key].newValue);
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -68,11 +79,50 @@ async function refreshUI() {
   const tab = await getActiveTab();
   const isPost = tab && REDDIT_POST_RE.test(tab.url || "");
 
+  currentTabId = tab ? tab.id : null;
+
   notRedditNotice.classList.toggle("hidden", isPost);
   mainContent.classList.toggle("hidden", !isPost);
 
-  // Clear previous results when navigating away or to a new post
+  // Always reset output first, then restore from cache if available
   resetOutputArea(postSummaryArea, postLoading, postSummaryEl);
+  btnPost.disabled = false;
+
+  if (isPost && currentTabId !== null) {
+    const stored = await chrome.storage.local.get(summaryKey(currentTabId));
+    const entry  = stored[summaryKey(currentTabId)];
+
+    if (entry) {
+      const age = Date.now() - (entry.savedAt || 0);
+      if (age > SUMMARY_TTL_MS) {
+        // Expired — clean up silently
+        chrome.storage.local.remove(summaryKey(currentTabId));
+      } else {
+        applyStoredState(entry);
+      }
+    }
+  }
+}
+
+// Apply a storage entry to the UI (handles loading / done / error states)
+function applyStoredState(entry) {
+  if (!entry) return;
+
+  postSummaryArea.classList.remove("hidden");
+
+  if (entry.status === "loading") {
+    postLoading.classList.remove("hidden");
+    postSummaryEl.innerHTML = "";
+    btnPost.disabled = true;
+  } else if (entry.status === "done") {
+    postLoading.classList.add("hidden");
+    renderMarkdown(postSummaryEl, entry.summary);
+    btnPost.disabled = false;
+  } else if (entry.status === "error") {
+    postLoading.classList.add("hidden");
+    postSummaryEl.textContent = `Error: ${entry.error}`;
+    btnPost.disabled = false;
+  }
 }
 
 function resetOutputArea(area, spinner, textEl) {
@@ -86,61 +136,48 @@ btnPost.addEventListener("click", async () => {
   const tab = await getActiveTab();
   if (!tab) return;
 
-  // Ensure settings are saved before proceeding
-  const { lmBaseUrl, lmModel } = await chrome.storage.local.get([
-    "lmBaseUrl",
-    "lmModel",
-  ]);
-
+  // Ensure settings are configured before proceeding
+  const { lmBaseUrl, lmModel } = await chrome.storage.local.get(["lmBaseUrl", "lmModel"]);
   if (!lmBaseUrl && !lmModel) {
-    // Prompt user to configure settings on first use
     settingsPanel.classList.remove("hidden");
     settingsPanel.setAttribute("aria-hidden", "false");
     settingsStatus.textContent = "Please set your LM Studio URL and model first.";
     settingsStatus.style.color = "#ff6314";
-    setTimeout(() => {
-      settingsStatus.textContent = "";
-      settingsStatus.style.color = "";
-    }, 4000);
+    setTimeout(() => { settingsStatus.textContent = ""; settingsStatus.style.color = ""; }, 4000);
     return;
   }
 
-  // Show spinner, clear old summary
-  postSummaryArea.classList.remove("hidden");
-  postLoading.classList.remove("hidden");
-  postSummaryEl.textContent = "";
-  btnPost.disabled = true;
+  const tabId = tab.id;
+  const key   = summaryKey(tabId);
+
+  // Write loading state to storage — background will overwrite with done/error
+  await chrome.storage.local.set({ [key]: { status: "loading", savedAt: Date.now() } });
+  applyStoredState({ status: "loading" });
 
   try {
-    // Step 1: scrape the post from the content script
-    const scrapeResult = await sendToContentScript(tab.id, { action: "scrapePost" });
-
-    if (!scrapeResult.ok) {
-      throw new Error(scrapeResult.error || "Failed to scrape post content.");
-    }
+    // Step 1: scrape the post via content script
+    const scrapeResult = await sendToContentScript(tabId, { action: "scrapePost" });
+    if (!scrapeResult.ok) throw new Error(scrapeResult.error || "Failed to scrape post content.");
 
     const { title, body } = scrapeResult;
     const text = [title, body].filter(Boolean).join("\n\n");
 
-    // Step 2: send text to background service worker for LM Studio call
-    const summaryResult = await chrome.runtime.sendMessage({
-      action: "summarize",
-      type:   "post",
-      text,
-    });
-
-    if (!summaryResult.ok) {
-      throw new Error(summaryResult.error || "Summarization failed.");
-    }
-
-    postSummaryEl.textContent = summaryResult.summary;
+    // Step 2: fire summarize request to background — result comes back via storage.onChanged
+    chrome.runtime.sendMessage({ action: "summarize", type: "post", text, tabId });
   } catch (err) {
-    postSummaryEl.textContent = `Error: ${err.message}`;
-  } finally {
-    postLoading.classList.add("hidden");
-    btnPost.disabled = false;
+    // Scraping failed before even reaching background — write error to storage directly
+    await chrome.storage.local.set({
+      [key]: { status: "error", error: err.message, savedAt: Date.now() },
+    });
   }
 });
+
+// ── Markdown rendering ───────────────────────────────────────────────────
+function renderMarkdown(el, text) {
+  // marked.parse returns HTML; sanitize by relying on marked's default escaping.
+  // For an extension context this is acceptable — no user-supplied HTML enters here.
+  el.innerHTML = marked.parse(text);
+}
 
 // ── Messaging helper ──────────────────────────────────────────────────────
 // Wraps chrome.tabs.sendMessage and handles the case where the content script
