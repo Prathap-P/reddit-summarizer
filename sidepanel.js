@@ -6,7 +6,8 @@ const lmModelInput      = document.getElementById("lm-model");
 const saveSettingsBtn   = document.getElementById("save-settings");
 const settingsStatus    = document.getElementById("settings-status");
 
-const notRedditNotice   = document.getElementById("not-reddit-notice");
+const notSupportedNotice = document.getElementById("not-supported-notice");
+const platformBadge      = document.getElementById("platform-badge");
 const mainContent       = document.getElementById("main-content");
 
 const btnPost           = document.getElementById("btn-summarize-post");
@@ -15,10 +16,11 @@ const postLoading       = document.getElementById("post-loading");
 const postSummaryEl     = document.getElementById("post-summary");
 
 // ── Constants & shared state ───────────────────────────────────────────────
-const REDDIT_POST_RE = /^https:\/\/www\.reddit\.com\/r\/[^/]+\/comments\//;
+// PLATFORMS and detectPlatform() are provided by platforms.js loaded before this script.
 const SUMMARY_TTL_MS = 10 * 60 * 1000;           // 10 minutes
 const summaryKey     = (tabId) => `summary_${tabId}`;
-let   currentTabId   = null;
+let   currentTabId      = null;
+let   currentPlatform   = null; // { id, name, buttonLabel } | null
 
 // ── Initialise ────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
@@ -76,19 +78,36 @@ async function getActiveTab() {
 }
 
 async function refreshUI() {
-  const tab = await getActiveTab();
-  const isPost = tab && REDDIT_POST_RE.test(tab.url || "");
+  const tab      = await getActiveTab();
+  const platform = tab ? detectPlatform(tab.url || "") : null;
 
-  currentTabId = tab ? tab.id : null;
+  currentTabId    = tab ? tab.id : null;
+  currentPlatform = platform;
 
-  notRedditNotice.classList.toggle("hidden", isPost);
-  mainContent.classList.toggle("hidden", !isPost);
+  const isSupported = !!platform;
+
+  notSupportedNotice.classList.toggle("hidden", isSupported);
+  mainContent.classList.toggle("hidden", !isSupported);
+
+  // Update platform badge and button label
+  if (platform) {
+    // Re-trigger the pop animation on every tab switch by toggling the element
+    platformBadge.classList.add("hidden");
+    // Use requestAnimationFrame to ensure the class removal takes effect before re-adding
+    requestAnimationFrame(() => {
+      platformBadge.textContent = platform.name;
+      platformBadge.classList.remove("hidden");
+    });
+    btnPost.textContent = platform.buttonLabel;
+  } else {
+    platformBadge.classList.add("hidden");
+  }
 
   // Always reset output first, then restore from cache if available
   resetOutputArea(postSummaryArea, postLoading, postSummaryEl);
   btnPost.disabled = false;
 
-  if (isPost && currentTabId !== null) {
+  if (isSupported && currentTabId !== null) {
     const stored = await chrome.storage.local.get(summaryKey(currentTabId));
     const entry  = stored[summaryKey(currentTabId)];
 
@@ -163,7 +182,13 @@ btnPost.addEventListener("click", async () => {
     const text = [title, body].filter(Boolean).join("\n\n");
 
     // Step 2: fire summarize request to background — result comes back via storage.onChanged
-    chrome.runtime.sendMessage({ action: "summarize", type: "post", text, tabId });
+    chrome.runtime.sendMessage({
+      action: "summarize",
+      type: "post",
+      text,
+      tabId,
+      platform: currentPlatform ? currentPlatform.id : "unknown",
+    });
   } catch (err) {
     // Scraping failed before even reaching background — write error to storage directly
     await chrome.storage.local.set({
